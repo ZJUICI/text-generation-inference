@@ -58,7 +58,8 @@ class GPTNeoxSharded(CausalLM):
         )
         if config.quantize == "gptq":
             weights._set_gptq_params(model_id)
-
+        elif config.quantize == "awq":
+            weights._set_awq_params(model_id)
         model = GPTNeoxForCausalLM(config, weights)
 
         torch.distributed.barrier(group=self.process_group)

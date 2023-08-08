@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from safetensors import safe_open, SafetensorError
 import torch
+import os
 from loguru import logger
 from huggingface_hub import hf_hub_download
 import json
@@ -109,7 +110,7 @@ class Weights:
         return self.get_partial_sharded(tensor_name, dim)
 
     def get_multi_weights_col(self, prefixes: List[str], quantize: str, dim: int):
-        if quantize == "gptq":
+        if quantize == "gptq" or quantize == "awq":
             try:
                 qweight = torch.cat(
                     [self.get_sharded(f"{p}.qweight", dim=1) for p in prefixes], dim=1
@@ -125,13 +126,17 @@ class Weights:
             scales = torch.cat(
                 [self.get_sharded(f"{p}.scales", dim=1) for p in prefixes], dim=1
             )
-            w = [self.get_tensor(f"{p}.g_idx") for p in prefixes]
-            for w2 in w[1:]:
-                torch.testing.assert_close(w2, w[0])
-            g_idx = w[0]
+            if quantize == "gptq":
+                w = [self.get_tensor(f"{p}.g_idx") for p in prefixes]
+                for w2 in w[1:]:
+                    torch.testing.assert_close(w2, w[0])
+                g_idx = w[0]
 
-            bits, groupsize = self._get_gptq_params()
-            weight = (qweight, qzeros, scales, g_idx, bits, groupsize, False)
+                bits, groupsize = self._get_gptq_qparams()
+                weight = (qweight, qzeros, scales, g_idx, bits, groupsize, False)
+            else:
+                bits, groupsize = self._get_awq_qparams()
+                weight = (qweight, qzeros, scales, bits, groupsize)
         else:
             w = [self.get_sharded(f"{p}.weight", dim=0) for p in prefixes]
             weight = torch.cat(w, dim=dim)
@@ -203,6 +208,16 @@ class Weights:
                 g_idx = self.get_sharded(f"{prefix}.g_idx", dim=0)
 
             weight = (qweight, qzeros, scales, g_idx, bits, groupsize, use_exllama)
+        elif quantize == "awq":
+            bits, groupsize = self._get_awq_qparams()
+
+            if bits != 4:
+                raise NotImplementedError("Awq Only 4-bit are supported for now.")
+
+            qweight = self.get_sharded(f"{prefix}.qweight", dim=0)
+            qzeros = self.get_tensor(f"{prefix}.qzeros")
+            scales = self.get_tensor(f"{prefix}.scales")
+            weight = (qweight, qzeros, scales, bits, groupsize)
         else:
             weight = self.get_sharded(f"{prefix}.weight", dim=1)
         return weight
@@ -221,11 +236,43 @@ class Weights:
         return bits, groupsize
 
     def _set_gptq_params(self, model_id):
+        filename = "quantize_config.json"
         try:
-            filename = hf_hub_download(model_id, filename="quantize_config.json")
+            if os.path.exists(os.path.join(model_id, filename)):
+                filename = os.path.join(model_id, filename)
+            else:
+                filename = hf_hub_download(model_id, filename=filename)
             with open(filename, "r") as f:
                 data = json.load(f)
             self.gptq_bits = data["bits"]
             self.gptq_groupsize = data["group_size"]
+        except Exception:
+            pass
+    
+    def _get_awq_qparams(self) -> Tuple[int, int]:
+        try:
+            bits = self.get_tensor("awq_bits").item()
+            groupsize = self.get_tensor("awq_groupsize").item()
+        except (SafetensorError, RuntimeError) as e:
+            try:
+
+                bits = self.awq_bits
+                groupsize = self.awq_groupsize
+            except Exception:
+                raise e
+
+        return bits, groupsize
+    
+    def _set_awq_params(self, model_id):
+        filename = "quantize_config.json"
+        try:
+            if os.path.exists(os.path.join(model_id, filename)):
+                filename = os.path.join(model_id, filename)
+            else:
+                filename = hf_hub_download(model_id, filename=filename)
+            with open(filename, "r") as f:
+                data = json.load(f)
+            self.awq_bits = data["bits"]
+            self.awq_groupsize = data["group_size"]
         except Exception:
             pass

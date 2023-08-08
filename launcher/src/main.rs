@@ -23,6 +23,7 @@ mod env_runtime;
 enum Quantization {
     Bitsandbytes,
     Gptq,
+    Awq,
 }
 
 impl std::fmt::Display for Quantization {
@@ -34,6 +35,9 @@ impl std::fmt::Display for Quantization {
             }
             Quantization::Gptq => {
                 write!(f, "gptq")
+            }
+            Quantization::Awq => {
+                write!(f, "awq")
             }
         }
     }

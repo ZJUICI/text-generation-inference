@@ -17,6 +17,7 @@ except ImportError:
 from accelerate import init_empty_weights
 
 from text_generation_server.utils.gptq.quant_linear import QuantLinear
+from text_generation_server.utils.awq.qmodule import WQLinear
 
 HAS_EXLLAMA = True
 if os.getenv("DISABLE_EXLLAMA") == "True":
@@ -172,6 +173,15 @@ def get_linear(weight, bias, quantize):
                 bits,
                 groupsize,
             )
+    elif quantize == "awq":
+        try:
+            qweight, qzeros, scales, bits, groupsize = weight
+        except Exception:
+            raise NotImplementedError(
+                f"The passed weight is not `awq` compatible, loader needs to be updated."
+            )
+        # use the awq linear return
+        linear = WQLinear(qweight, qzeros, scales, bits, groupsize, bias)
     else:
         raise NotImplementedError(f"Quantization `{quantize}` is not implemented yet.")
     return linear
@@ -208,7 +218,7 @@ class TensorParallelHead(SuperLayer):
             should_gather = False
 
         # GPTQ doesn't quantize heads (nor embeddings)
-        if config.quantize == "gptq":
+        if config.quantize == "gptq" or config.quantize == "awq" :
             quantize = None
         else:
             quantize = config.quantize
